@@ -1,25 +1,7 @@
-#include <wiringPi.h>
-
-#ifndef PORT
-#define PORT 65015
-#endif
-
 #define IS_IPV4 false
 #define IS_IPV6 true
-#define NETPI_VERBOSE true
+#define NETPI_VERBOSE false
 
-#include <iostream>
-#include <arpa/inet.h>
-#include <sys/types.h>
-#include <unistd.h> 
-#include <stdio.h> 
-#include <sys/socket.h> 
-#include <stdlib.h> 
-#include <netinet/in.h> 
-#include <string.h> 
-#include <thread>
-#include <chrono>
-#include <pthread.h>
 #include "socket.h"
 
 void _on_connect()
@@ -29,7 +11,6 @@ void _on_connect()
 
 int main(void)
 {
-	// wiringPiSetupSys();
 
 	/* Testing the sockets */
 

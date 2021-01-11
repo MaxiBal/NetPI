@@ -1,8 +1,22 @@
 #pragma once
 
 #include <thread>
+#include <vector>
+#include <sstream>
+#include <functional>
+#include <iostream>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <unistd.h> 
+#include <stdio.h> 
+#include <sys/socket.h> 
+#include <stdlib.h> 
+#include <netinet/in.h> 
+#include <string.h> 
+#include <thread>
+#include <chrono>
+#include <map>
 
-#include "socket_event.h"
 
 #ifndef MSG_CONFIRM
 #define MSG_CONFIRM 1
@@ -26,19 +40,201 @@
 #define NETPI_VERBOSE false
 #endif
 
+#ifndef PORT
+#define PORT 65015
+#endif
+
 /* Configures the max length of the client queue */
 
 #ifndef CLIENT_QUEUE_LEN
 #define CLIENT_QUEUE_LEN 10
 #endif
 
+/* Sets up local computer's ip address */
 
-#include "response.h"
-#include "route.h"
-#include "socket_options.h"
-#include "response.h"
+#if IS_IPV4
+sockaddr_in this_addr;
+static void configure_ip()
+{
+	this_addr.sin_family = AF_INET;
+	this_addr.sin_addr = INADDR_ANY;
+	this_addr.sin_port = PORT;
+}
 
-namespace netpi {
+#endif
+
+#if IS_IPV6
+sockaddr_in6 this_addr;
+static void configure_ip()
+{
+	this_addr.sin6_family = AF_INET6;
+	this_addr.sin6_addr = in6addr_any;
+	this_addr.sin6_port = htons(PORT);
+}
+#endif
+
+static int _error(const char* msg)
+{
+	perror(msg);
+	return EXIT_FAILURE;
+}
+
+#ifdef __cplusplus
+
+static std::vector<std::string> split(std::string s, std::string delimiter)
+{
+	std::vector<std::string> return_vec;
+
+	size_t pos = 0;
+	std::string token;
+	while ((pos = s.find(delimiter)) != std::string::npos) 
+	{
+		token = s.substr(0, pos);
+		return_vec.push_back(token);
+		s.erase(0, pos + delimiter.length());
+	}
+
+	return_vec.push_back(s);
+
+	return return_vec;
+}
+
+static std::vector<std::string> split_first(std::string s, std::string delimiter)
+{
+	size_t pos = s.find(delimiter);
+
+	return std::vector<std::string>{s.substr(0, pos), s.substr(pos, s.size())};
+}
+
+static std::map<std::string, std::string> map_request(const std::string& total_request)
+{
+	std::istringstream ss(total_request);
+	std::string line;
+	std::map<std::string, std::string> parsed_request{};
+
+	while (getline(ss, line))
+	{
+		std::vector<std::string> parsed_line = split(line, ":");
+
+		if (parsed_line.size() >= 2)
+		{
+			parsed_request.insert(std::make_pair(parsed_line[0], parsed_line[1]));
+		}
+	}
+	return parsed_request;
+}
+
+static void print_map(const std::map<std::string, std::string>& m)
+{
+	for (const auto& j : m)
+	{
+		std::cout << j.first << " = " << j.second << "\n";
+	}
+}
+#endif
+
+namespace netpi 
+{
+	struct socket_event
+	{
+
+		socket_event() = default;
+		socket_event(std::function<void()> act)
+		{
+			socket_action = act;
+		}
+
+		// The socket_event's action
+		std::function<void()> socket_action;
+
+		socket_event(const socket_event& other)
+		{
+			socket_action = other.socket_action;
+		}
+		void operator=(const socket_event& other) { socket_action = other.socket_action; }
+		void operator()(const socket_event& other) { socket_action = other.socket_action; }
+	};
+
+	struct request
+	{
+		bool hand_shaked = true;
+		int status_code;
+		char* status_message;
+		char* origin;
+		char* connection;
+		int cache_control = 0;
+		bool upgrade_insecure_requests = false;
+
+		const char* user_agent;
+		const char* lang;
+		const char* target; // Describes the ip the client tried to request from
+		const char* accept;
+
+		std::string data;
+
+		const char* read()
+		{
+			return data.c_str();
+		}
+
+	};
+
+	struct socket_response
+	{
+		bool readable;
+		bool auto_destroy; // Decides whether or not the socket should self-destroy after it is done with it's operations
+		bool destroyed; // Whether or not the socket has been destroyed
+		int status_code;
+		char* status_message;
+		std::string data;
+	};
+
+	// Manages one route
+	struct route
+	{
+		const char* route_name; // Example: "/foo"
+		const char* send_on_request; // Server's response on connection
+	}; // route
+
+	// Manages a set of routes and/or routers
+	struct router
+	{
+		const char* router_name; // Example: "/foo"
+		std::vector<route> child_routes; // Example: "/foo/bar"
+		std::vector<router> child_routers;
+
+		// Sets a route as a part of the router
+		void on_(route r)
+		{
+			child_routes.push_back(r);
+		}
+
+		// Sets a router as a part of the router
+		void on_(router r)
+		{
+			child_routers.push_back(r);
+		}
+	}; // router
+
+	struct server_socket_options
+	{
+		bool secure = false; // Decides if the socket encrypts its data before sending it
+	}; // struct server_socket_options
+
+	static request parse_request(std::map<std::string, std::string> req)
+	{
+		request r;
+
+		r.hand_shaked = true;
+
+		if (req.find("User-Agent") != req.end())
+		{
+			r.user_agent = req["User-Agent"].c_str();
+		}
+
+		return r;
+	}
+
 	class server_socket
 	{
 	private:
@@ -49,21 +245,32 @@ namespace netpi {
 
 		char str_addr[INET6_ADDRSTRLEN];
 		int ret, flag;
+
 		char ch = 'Y';
 
 		bool _active = false;
 		bool _connected = false;
+
+		const char* _read()
+		{
+			return "foo";
+		}
 
 	public:
 		server_socket_options options;
 
 		socket_event on_connect = std::function<void()>();
 		socket_event on_end = std::function<void()>();
+		socket_event callback = std::function<void()>();
 
 		router server_router;
 
 		int listen_()
 		{
+			configure_ip();
+
+			server_addr = this_addr;
+
 			_active = true;
 
 			listen_sock_fd = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
@@ -76,29 +283,23 @@ namespace netpi {
 			flag = 1;
 			ret = setsockopt(listen_sock_fd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
 			if (ret == -1) {
-				perror("setsockopt()");
-				return EXIT_FAILURE;
+				return _error("setsockopt() failed");
 			} // ret == -1
-			
-			// configure the server's address
-			server_addr.sin6_family = AF_INET6;
-			server_addr.sin6_addr = in6addr_any;
-			server_addr.sin6_port = htons(PORT);
 
 			/* Bind address and socket together */
 			ret = bind(listen_sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
 			if (ret == -1) {
-				perror("bind()");
 				close(listen_sock_fd);
-				return EXIT_FAILURE;
+				return _error("bind() failed");
 			} // ret == -1
 
 			/* Create listening queue (client requests) */
 			ret = listen(listen_sock_fd, CLIENT_QUEUE_LEN);
 			if (ret == -1) {
-				perror("listen()");
+				
 				close(listen_sock_fd);
-				return EXIT_FAILURE;
+				return _error("listen failed");
+
 			} // ret == -1
 
 			client_addr_len = sizeof(client_addr);
@@ -111,16 +312,17 @@ namespace netpi {
 					(struct sockaddr*)&client_addr,
 					&client_addr_len);
 				if (client_sock_fd == -1) {
-					perror("accept()");
+					
 					close(listen_sock_fd);
-					return EXIT_FAILURE;
+					return _error("accept() failed");
 				} // client_sock_fd == -1
 
 				inet_ntop(AF_INET6, &(client_addr.sin6_addr),
 					str_addr, sizeof(str_addr));
-				printf("New connection from: %s:%d ...\n",
-					str_addr,
-					ntohs(client_addr.sin6_port));
+				if (NETPI_VERBOSE)
+					printf("New connection from: %s:%d ...\n",
+						str_addr,
+						ntohs(client_addr.sin6_port));
 
 				on_connect.socket_action();
 
@@ -146,7 +348,12 @@ namespace netpi {
 					continue;
 				} // ret == -1
 
-				std::cout << rcv << std::endl;
+				/* Parsing the request to make a request object */
+
+				
+				std::map<std::string, std::string> parsed_request = map_request(rcv);
+
+				netpi::request req = parse_request(parsed_request);
 
 				/* Send response to client */
 				ret = write(client_sock_fd, &ch, 1);
@@ -163,7 +370,8 @@ namespace netpi {
 					client_sock_fd = -1;
 				} // ret == -1
 
-				printf("Connection closed\n");
+				if (NETPI_VERBOSE)
+					printf("Connection closed\n");
 			} // while (true)
 			printf("Thread exiting with code %i", code);
 			return code;
@@ -208,7 +416,11 @@ namespace netpi {
 			
 
 			/* Create socket for communication with server */
-			sock_fd = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+			if (IS_IPV6)
+				sock_fd = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+			else
+				sock_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
 			if (sock_fd == -1) {
 				perror("socket()");
 				return EXIT_FAILURE;
