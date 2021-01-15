@@ -106,6 +106,14 @@ static std::vector<std::string> split_first(std::string s, std::string delimiter
 	return std::vector<std::string>{s.substr(0, pos), s.substr(pos, s.size())};
 }
 
+static void print_map(std::map<std::string, std::string> m)
+{
+	for (std::map<std::string, std::string>::iterator i = m.begin(); i != m.end(); ++i)
+	{
+		std::cout << i->first << ": " << i->second << "\n";
+	}
+}
+
 static std::map<std::string, std::string> map_request(const std::string& total_request)
 {
 	std::istringstream ss(total_request);
@@ -114,7 +122,7 @@ static std::map<std::string, std::string> map_request(const std::string& total_r
 
 	while (getline(ss, line))
 	{
-		std::vector<std::string> parsed_line = split(line, ":");
+		std::vector<std::string> parsed_line = split(line, ": ");
 
 		if (parsed_line.size() >= 2)
 		{
@@ -124,13 +132,8 @@ static std::map<std::string, std::string> map_request(const std::string& total_r
 	return parsed_request;
 }
 
-static void print_map(const std::map<std::string, std::string>& m)
-{
-	for (const auto& j : m)
-	{
-		std::cout << j.first << " = " << j.second << "\n";
-	}
-}
+
+
 #endif
 
 namespace netpi 
@@ -147,13 +150,28 @@ namespace netpi
 		// The socket_event's action
 		std::function<void()> socket_action;
 
+		/* Copy constructor*/
 		socket_event(const socket_event& other)
 		{
 			socket_action = other.socket_action;
 		}
+
+		/* Copying another socket_event*/
 		void operator=(const socket_event& other) { socket_action = other.socket_action; }
-		void operator()(const socket_event& other) { socket_action = other.socket_action; }
+
+		/* Operators for calling socket_action */
+		void operator()() 
+		{
+			socket_action();
+		}
+
+		operator bool()
+		{
+			return (bool)socket_action;
+		}
 	};
+
+	
 
 	struct request
 	{
@@ -161,14 +179,16 @@ namespace netpi
 		int status_code;
 		char* status_message;
 		char* origin;
-		char* connection;
+		std::string connection;
 		int cache_control = 0;
 		bool upgrade_insecure_requests = false;
 
-		const char* user_agent;
+		std::string user_agent;
+		std::string client_user_agent;
+		std::string host;
 		const char* lang;
-		const char* target; // Describes the ip the client tried to request from
-		const char* accept;
+		std::string target; // Describes the ip the client tried to request from
+		std::string accept;
 
 		std::string data;
 
@@ -179,21 +199,47 @@ namespace netpi
 
 	};
 
-	struct socket_response
+	/* Outlines a response */
+	struct response
 	{
 		bool readable;
-		bool auto_destroy; // Decides whether or not the socket should self-destroy after it is done with it's operations
-		bool destroyed; // Whether or not the socket has been destroyed
 		int status_code;
 		char* status_message;
 		std::string data;
+
+		void send(std::string d)
+		{
+			data = data + d;
+		}
+
+		void send(const char* d)
+		{
+			data = data + std::string(d);
+		}
+	};
+
+	/* Standard callback for the server socket */
+	/* Callback function should take in netpi::request and return a netpi::response */
+	struct callback
+	{
+		callback() = default;
+		callback(std::function<netpi::response(netpi::request)> act)
+		{
+			socket_action = act;
+		}
+
+		std::function<netpi::response(netpi::request)> socket_action;
+
+		void operator=(const callback& other) { socket_action = other.socket_action; }
+		void operator()(netpi::request r) { socket_action(r); }
+
 	};
 
 	// Manages one route
 	struct route
 	{
 		const char* route_name; // Example: "/foo"
-		const char* send_on_request; // Server's response on connection
+		const netpi::response send_on_request; // Server's response on connection
 	}; // route
 
 	// Manages a set of routes and/or routers
@@ -221,20 +267,43 @@ namespace netpi
 		bool secure = false; // Decides if the socket encrypts its data before sending it
 	}; // struct server_socket_options
 
+#ifdef __cplusplus
 	static request parse_request(std::map<std::string, std::string> req)
 	{
 		request r;
+
+		print_map(req);
 
 		r.hand_shaked = true;
 
 		if (req.find("User-Agent") != req.end())
 		{
-			r.user_agent = req["User-Agent"].c_str();
+			r.user_agent =req["User-Agent"];
+		}
+
+		if (req.find("Accept") != req.end())
+		{
+			r.accept = req["Accept"].c_str();
+		}
+
+		if (req.find("Client's user-agent") != req.end())
+		{
+			r.client_user_agent = req["Client's user-agent"];
+		}
+
+		if (req.find("Connection") != req.end())
+		{
+			r.connection = req["Connection"];
+		}
+
+		if (req.find("Host") != req.end())
+		{
+			
 		}
 
 		return r;
 	}
-
+#endif
 	class server_socket
 	{
 	private:
@@ -251,21 +320,25 @@ namespace netpi
 		bool _active = false;
 		bool _connected = false;
 
-		const char* _read()
-		{
-			return "foo";
-		}
+		router server_router;
 
 	public:
 		server_socket_options options;
 
-		socket_event on_connect = std::function<void()>();
-		socket_event on_end = std::function<void()>();
-		socket_event callback = std::function<void()>();
+		socket_event on_connect;
+		socket_event on_end;
 
-		router server_router;
+		void add_route(route r)
+		{
+			server_router.on_(r);
+		}
 
-		int listen_()
+		void add_router(router r)
+		{
+			server_router.on_(r);
+		}
+
+		int listen_(callback callback_)
 		{
 			configure_ip();
 
@@ -324,7 +397,7 @@ namespace netpi
 						str_addr,
 						ntohs(client_addr.sin6_port));
 
-				on_connect.socket_action();
+				if (on_connect) on_connect.socket_action();
 
 				/* Wait for data from client */
 				const unsigned int MAX_BUF_LENGTH = 4096;
@@ -355,6 +428,8 @@ namespace netpi
 
 				netpi::request req = parse_request(parsed_request);
 
+				callback_(req);
+
 				/* Send response to client */
 				ret = write(client_sock_fd, &ch, 1);
 				if (ret == -1) {
@@ -370,8 +445,11 @@ namespace netpi
 					client_sock_fd = -1;
 				} // ret == -1
 
-				if (NETPI_VERBOSE)
-					printf("Connection closed\n");
+				if (on_end)
+					on_end();
+
+				if (NETPI_VERBOSE) printf("Connection closed\n");
+
 			} // while (true)
 			printf("Thread exiting with code %i", code);
 			return code;
@@ -391,9 +469,14 @@ namespace netpi
 	class client_socket 
 	{
 	private:
-		socket_response res;
+		response res;
 		// defaults to localhost
+#if IS_IPV6
 		struct sockaddr_in6 server_addr;
+#endif
+#if IS_IPV4
+		struct sockaddr_in server_addr;
+#endif
 
 	public:
 
@@ -465,10 +548,17 @@ namespace netpi
 			return EXIT_SUCCESS;
 		} // listen_
 
+#if IS_IPV6
 		void configure_ip(struct sockaddr_in6& other)
 		{
 			server_addr = other;
 		}
-
+#endif
+#if IS_IPV4
+		void configure_ip(struct sockaddr_in& other)
+		{
+			server_addr = other;
+		}
+#endif
 	}; // client_socket
 } // namespace

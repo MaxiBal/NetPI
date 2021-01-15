@@ -1,12 +1,13 @@
 #define IS_IPV4 false
 #define IS_IPV6 true
-#define NETPI_VERBOSE false
 
 #include "socket.h"
 
-void _on_connect()
+netpi::response on_req(netpi::request req)
 {
-	std::cout << "This is the server socket's on connect function!" << std::endl;
+	std::cout << "Client's user-agent: " << req.user_agent << std::endl;
+
+	return netpi::response();
 }
 
 int main(void)
@@ -16,9 +17,12 @@ int main(void)
 
 	netpi::server_socket so;
 
-	so.on_connect = std::function<void()>(_on_connect);
-
-	std::thread t(&netpi::server_socket::listen_, so);
+	std::thread t([&]() 
+	{
+			netpi::callback s_event;
+			s_event.socket_action = std::function<netpi::response(netpi::request)>(on_req);
+			so.listen_(s_event);
+	});
 
 	std::cout << "Socket listening on Port " << PORT << std::endl;
 
