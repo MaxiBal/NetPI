@@ -99,20 +99,20 @@ static std::vector<std::string> split(std::string s, std::string delimiter)
 	return return_vec;
 }
 
-static std::vector<std::string> split_first(std::string s, std::string delimiter)
-{
-	size_t pos = s.find(delimiter);
+//static std::vector<std::string> split_first(std::string s, std::string delimiter)
+//{
+//	size_t pos = s.find(delimiter);
+//
+//	return std::vector<std::string>{s.substr(0, pos), s.substr(pos, s.size())};
+//}
 
-	return std::vector<std::string>{s.substr(0, pos), s.substr(pos, s.size())};
-}
-
-static void print_map(std::map<std::string, std::string> m)
-{
-	for (std::map<std::string, std::string>::iterator i = m.begin(); i != m.end(); ++i)
-	{
-		std::cout << i->first << ": " << i->second << "\n";
-	}
-}
+//static void print_map(std::map<std::string, std::string> m)
+//{
+//	for (std::map<std::string, std::string>::iterator i = m.begin(); i != m.end(); ++i)
+//	{
+//		std::cout << i->first << ": " << i->second << "\n";
+//	}
+//}
 
 static std::map<std::string, std::string> map_request(const std::string& total_request)
 {
@@ -202,10 +202,14 @@ namespace netpi
 	/* Outlines a response */
 	struct response
 	{
+	private:
+		std::string data;
+
+	public:
+		bool failed;
 		bool readable;
 		int status_code;
-		char* status_message;
-		std::string data;
+		const char* status_message;
 
 		void send(std::string d)
 		{
@@ -216,7 +220,23 @@ namespace netpi
 		{
 			data = data + std::string(d);
 		}
+		std::string get_data()
+		{
+			return data;
+		}
 	};
+
+	static netpi::response failed_response(const char* err_message)
+	{
+		netpi::response r;
+		r.failed = true;
+		r.readable = false;
+		r.send(nullptr);
+		r.status_code = -1;
+		r.status_message = err_message;
+
+		return r;
+	}
 
 	/* Standard callback for the server socket */
 	/* Callback function should take in netpi::request and return a netpi::response */
@@ -231,7 +251,7 @@ namespace netpi
 		std::function<netpi::response(netpi::request)> socket_action;
 
 		void operator=(const callback& other) { socket_action = other.socket_action; }
-		void operator()(netpi::request r) { socket_action(r); }
+		netpi::response operator()(netpi::request r) { return socket_action(r); }
 
 	};
 
@@ -272,13 +292,11 @@ namespace netpi
 	{
 		request r;
 
-		print_map(req);
-
 		r.hand_shaked = true;
 
 		if (req.find("User-Agent") != req.end())
 		{
-			r.user_agent =req["User-Agent"];
+			r.user_agent = req["User-Agent"];
 		}
 
 		if (req.find("Accept") != req.end())
@@ -298,7 +316,7 @@ namespace netpi
 
 		if (req.find("Host") != req.end())
 		{
-			
+			r.host = req["Host"];
 		}
 
 		return r;
@@ -428,10 +446,10 @@ namespace netpi
 
 				netpi::request req = parse_request(parsed_request);
 
-				callback_(req);
+				netpi::response res = callback_(req);
 
 				/* Send response to client */
-				ret = write(client_sock_fd, &ch, 1);
+				ret = send(client_sock_fd, res.get_data().c_str(), res.get_data().size(), MSG_CONFIRM);
 				if (ret == -1) {
 					perror("write()");
 					close(client_sock_fd);
@@ -469,7 +487,7 @@ namespace netpi
 	class client_socket 
 	{
 	private:
-		response res;
+		request req;
 		// defaults to localhost
 #if IS_IPV6
 		struct sockaddr_in6 server_addr;
@@ -477,6 +495,8 @@ namespace netpi
 #if IS_IPV4
 		struct sockaddr_in server_addr;
 #endif
+
+		std::vector<std::pair<std::string, std::string > > headers;
 
 	public:
 
@@ -492,7 +512,7 @@ namespace netpi
 			}
 		}
 
-		int send_(const char* send_data)
+		netpi::response send_(const char* send_data)
 		{
 			int sock_fd = -1;
 			int ret;
@@ -506,7 +526,7 @@ namespace netpi
 
 			if (sock_fd == -1) {
 				perror("socket()");
-				return EXIT_FAILURE;
+				return failed_response("failed at socket()");
 			} // sock_fd == -1
 
 			/* Connect to server running on localhost */
@@ -517,7 +537,7 @@ namespace netpi
 			if (ret == -1) {
 				perror("connect()");
 				close(sock_fd);
-				return EXIT_FAILURE;
+				return failed_response("failed at connect()");
 			} // ret == -1
 
 			/* Send data to server */
@@ -525,27 +545,31 @@ namespace netpi
 			if (ret == -1) {
 				perror("write");
 				close(sock_fd);
-				return EXIT_FAILURE;
+				return failed_response("failed at write()");
 			} // ret == -1
 
 			/* Wait for data from server */
-			ret = read(sock_fd, &res.data, 1);
+			ret = read(sock_fd, &req.data, 1);
 			if (ret == -1) {
 				perror("read()");
 				close(sock_fd);
-				return EXIT_FAILURE;
+				return failed_response("failed at read()");
 			} // ret == -1
 
-			printf("Received %c from server\n", res.data);
+			
+
+			printf("Received %c from server\n", req.data);
 
 			/* DO TCP teardown */
 			ret = close(sock_fd);
 			if (ret == -1) {
 				perror("close()");
-				return EXIT_FAILURE;
+				return failed_response("failed at close()");
 			} // ret == -1
+			
+			netpi::response r;
 
-			return EXIT_SUCCESS;
+			return r;
 		} // listen_
 
 #if IS_IPV6
@@ -560,5 +584,11 @@ namespace netpi
 			server_addr = other;
 		}
 #endif
+
+		void add_header(std::pair<std::string, std::string> p)
+		{
+			headers.push_back(p);
+		}
+
 	}; // client_socket
 } // namespace
