@@ -14,7 +14,9 @@
 #include <netinet/in.h> 
 #include <string.h> 
 #include <thread>
+#include <sstream>
 #include <chrono>
+#include <unordered_set>
 #include <map>
 
 
@@ -122,6 +124,10 @@ static std::map<std::string, std::string> map_request(const std::string& total_r
 
 	while (getline(ss, line))
 	{
+		if (line == "endheaders")
+		{
+			break;
+		}
 		std::vector<std::string> parsed_line = split(line, ": ");
 
 		if (parsed_line.size() >= 2)
@@ -185,9 +191,9 @@ namespace netpi
 
 		std::string user_agent;
 		std::string client_user_agent;
-		std::string host;
+		std::string host; // Describes the servers address
 		const char* lang;
-		std::string target; // Describes the ip the client tried to request from
+		std::string target; // Describes the address the client tried to request from
 		std::string accept;
 
 		std::string data;
@@ -220,6 +226,17 @@ namespace netpi
 		{
 			data = data + std::string(d);
 		}
+
+		void send_line(std::string d)
+		{
+			data = data + d + "\n";
+		}
+
+		void send_line(const char* d)
+		{
+			data = data + std::string(d) + "\n";
+		}
+
 		std::string get_data()
 		{
 			return data;
@@ -282,10 +299,48 @@ namespace netpi
 		}
 	}; // router
 
-	struct server_socket_options
+	/*
+	* netpi::headers 
+	*/
+
+	template<typename K, typename V>
+	struct headers
 	{
-		bool secure = false; // Decides if the socket encrypts its data before sending it
-	}; // struct server_socket_options
+	private:
+		std::vector<std::pair<K, V> > headers_;
+	public:
+		auto get_header(K key) -> V
+		{
+			for (auto i = headers_.begin(); i != headers_.end(); ++i)
+			{
+				if (i->first == key)
+				{
+					return i->second;
+				}
+			}
+		}
+
+		auto get_all_headers() -> decltype(headers_)
+		{
+			return headers_;
+		}
+
+		void set_header(K key, V val)
+		{
+			headers_.push_back(std::pair<K, V>(key, val));
+		}
+
+		void set_header(std::pair<K, V> pair)
+		{
+			headers_.push_back(pair);
+		}
+
+		const int size()
+		{
+			return headers_.size();
+		}
+
+	}; // headers
 
 #ifdef __cplusplus
 	static request parse_request(std::map<std::string, std::string> req)
@@ -294,6 +349,7 @@ namespace netpi
 
 		r.hand_shaked = true;
 
+		/* common requests and responses for convenience */
 		if (req.find("User-Agent") != req.end())
 		{
 			r.user_agent = req["User-Agent"];
@@ -322,6 +378,13 @@ namespace netpi
 		return r;
 	}
 #endif
+
+	struct send_packet
+	{
+		netpi::headers<std::string, std::string> headers;
+		std::string data;
+	};
+
 	class server_socket
 	{
 	private:
@@ -341,10 +404,14 @@ namespace netpi
 		router server_router;
 
 	public:
-		server_socket_options options;
-
+		
 		socket_event on_connect;
 		socket_event on_end;
+
+		void expect_headers()
+		{
+
+		}
 
 		void add_route(route r)
 		{
@@ -496,7 +563,8 @@ namespace netpi
 		struct sockaddr_in server_addr;
 #endif
 
-		std::vector<std::pair<std::string, std::string > > headers;
+		//std::vector<std::pair<std::string, std::string > > headers;
+		netpi::headers<std::string, std::string> headers;
 
 	public:
 
@@ -512,7 +580,7 @@ namespace netpi
 			}
 		}
 
-		netpi::response send_(const char* send_data)
+		netpi::response send_(netpi::send_packet packet)
 		{
 			int sock_fd = -1;
 			int ret;
@@ -540,8 +608,25 @@ namespace netpi
 				return failed_response("failed at connect()");
 			} // ret == -1
 
+			/* Generate server readable headers */
+			std::string string_headers = "";
+			std::vector<std::pair<std::string, std::string> > vec_headers = headers.get_all_headers();
+			
+			for (auto it = vec_headers.begin(); it != vec_headers.end(); ++it)
+			{
+				std::ostringstream temp_line;
+				temp_line << it->first << ": " << it->second << "\n";
+				string_headers += temp_line.str();
+			}
+
+			string_headers += "endheaders\n";
+
+			/* Send server headers */
+			send(sock_fd, string_headers.c_str(), string_headers.size(), MSG_CONFIRM);
+
+
 			/* Send data to server */
-			send(sock_fd,  send_data, std::string(send_data).size(), MSG_CONFIRM);
+			send(sock_fd,  packet.data.c_str(), packet.data.size(), MSG_CONFIRM);
 			if (ret == -1) {
 				perror("write");
 				close(sock_fd);
@@ -556,8 +641,6 @@ namespace netpi
 				return failed_response("failed at read()");
 			} // ret == -1
 
-			
-
 			printf("Received %c from server\n", req.data);
 
 			/* DO TCP teardown */
@@ -567,9 +650,9 @@ namespace netpi
 				return failed_response("failed at close()");
 			} // ret == -1
 			
-			netpi::response r;
+			netpi::response final_r;
 
-			return r;
+			return final_r;
 		} // listen_
 
 #if IS_IPV6
@@ -587,7 +670,7 @@ namespace netpi
 
 		void add_header(std::pair<std::string, std::string> p)
 		{
-			headers.push_back(p);
+			headers.set_header(p);
 		}
 
 	}; // client_socket
